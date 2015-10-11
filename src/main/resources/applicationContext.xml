@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:context="http://www.springframework.org/schema/context"
+       xmlns:tx="http://www.springframework.org/schema/tx"
+       xmlns:aop="http://www.springframework.org/schema/aop"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans
+        http://www.springframework.org/schema/beans/spring-beans.xsd
+        http://www.springframework.org/schema/context
+        http://www.springframework.org/schema/context/spring-context.xsd
+        http://www.springframework.org/schema/tx
+        http://www.springframework.org/schema/tx/spring-tx.xsd
+        http://www.springframework.org/schema/aop
+        http://www.springframework.org/schema/aop/spring-aop.xsd">
+
+    <!-- Activates annotation-based bean configuration -->
+    <context:annotation-config/>
+
+    <context:component-scan base-package="com.tdb.tanbobo">
+        <context:include-filter type="annotation" expression="org.springframework.stereotype.Service"/>
+    </context:component-scan>
+
+    <!-- 用于持有ApplicationContext,可以使用SpringContextHolder.getBean('xxxx')的静态方法得到spring bean对象 -->
+    <!--<bean class="com.tdb.tanbobo.base.spring.SpringContextHolder" lazy-init="false"/>-->
+
+    <!-- 引入配置文件 -->
+    <context:property-placeholder location="classpath:config.properties"/>
+
+    <!--创建jdbc数据源 -->
+    <bean id="dataSource" class="com.mchange.v2.c3p0.ComboPooledDataSource" destroy-method="close" lazy-init="false">
+        <property name="driverClass" value="${database.driverClass}"/>
+        <property name="jdbcUrl" value="${database.jdbcUrl}"/>
+        <property name="user" value="${database.user}"/>
+        <property name="password" value="${database.password}"/>
+        <property name="initialPoolSize" value="${database.initialPoolSize}"/>
+        <property name="minPoolSize" value="${database.minPoolSize}"/>
+        <property name="maxPoolSize" value="${database.maxPoolSize}"/>
+        <property name="maxIdleTime" value="${database.maxIdleTime}"/>
+    </bean>
+
+    <!-- 使用JDBC事物管理器 -->
+    <bean id="transactionManager" class="org.springframework.jdbc.datasource.DataSourceTransactionManager">
+        <property name="dataSource" ref="dataSource"/>
+    </bean>
+
+    <!-- AOP配置事物通知:(事务的增强) -->
+    <tx:advice id="transactionAdvice" transaction-manager="transactionManager">
+        <tx:attributes>
+            <!--
+                propagation :事务传播行为
+                isolation :事务隔离级别
+                read-only :只读
+                rollback-for :发生哪异常回滚
+                no-rollback-for : 发生哪异常不回滚
+                timeout :过期信息
+            -->
+            <tx:method name="query*" read-only="true" propagation="REQUIRED"/>
+            <tx:method name="delete*" propagation="REQUIRED"/>
+            <tx:method name="update*" propagation="REQUIRED"/>
+            <tx:method name="insert*" propagation="REQUIRED"/>
+            <tx:method name="*" propagation="REQUIRED"/>
+        </tx:attributes>
+    </tx:advice>
+
+    <!-- 配置AOP切面 -->
+    <aop:config>
+        <aop:pointcut id="transactionPointcut" expression="execution(* com.tdb.tanbobo.*.service.*.*(..))"/>
+        <aop:advisor pointcut-ref="transactionPointcut" advice-ref="transactionAdvice"/>
+    </aop:config>
+
+    <!-- 配置SqlSessionFactoryBean -->
+    <bean id="sqlSessionFactory" class="org.mybatis.spring.SqlSessionFactoryBean">
+        <property name="dataSource" ref="dataSource"/>
+        <property name="configLocation" value="classpath:mybatis.xml"/>
+        <property name="typeAliasesPackage" value="com.tdb.tanbobo.main.entity"/>
+        <property name="mapperLocations">
+            <list>
+                <!--表示在包或以下所有目录中，以-mapper.xml结尾所有文件-->
+                <value>classpath:com.tdb.tanbobo.main.mapper/*.xml</value>
+            </list>
+        </property>
+    </bean>
+
+    <!-- 配置SQLSession模板 -->
+    <bean id="sqlSession" class="org.mybatis.spring.SqlSessionTemplate">
+        <constructor-arg index="0" ref="sqlSessionFactory"/>
+    </bean>
+
+    <!-- 真正可以产生Connection的ConnectionFactory，由对应的 JMS服务厂商提供-->
+    <bean id="targetConnectionFactory" class="org.apache.activemq.ActiveMQConnectionFactory">
+        <property name="brokerURL" value="tcp://localhost:61616"/>
+        <property name="userName" value="admin"/>
+        <property name="password" value="admin"/>
+        <property name="maxThreadPoolSize" value="100"/>
+    </bean>
+
+    <!--
+        ActiveMQ为我们提供了一个PooledConnectionFactory，
+        通过往里面注入一个ActiveMQConnectionFactory可以用来将Connection、Session和MessageProducer池化，
+        这样可以大大的减少我们的资源消耗
+    -->
+    <bean id="pooledConnectionFactory" class="org.apache.activemq.pool.PooledConnectionFactory" destroy-method="stop">
+        <property name="connectionFactory" ref="targetConnectionFactory"/>
+        <property name="maxConnections" value="10"/>
+    </bean>
+
+    <!--
+        ConnectionFactory是用于产生到JMS服务器的链接的，Spring为我们提供了多个ConnectionFactory，
+        有SingleConnectionFactory和CachingConnectionFactory。
+        SingleConnectionFactory对于建立JMS服务器链接的请求会一直返回同一个链接，并且会忽略Connection的close方法调用。
+        CachingConnectionFactory继承了SingleConnectionFactory，所以它拥有SingleConnectionFactory的所有功能，
+        同时它还新增了缓存功能，它可以缓存Session、MessageProducer和MessageConsumer
+    -->
+    <!-- Spring用于管理真正的ConnectionFactory的ConnectionFactory -->
+    <bean id="connectionFactory" class="org.springframework.jms.connection.SingleConnectionFactory">
+        <!-- 目标ConnectionFactory对应真实的可以产生JMS Connection的ConnectionFactory -->
+        <property name="targetConnectionFactory" ref="pooledConnectionFactory"/>
+    </bean>
+
+    <!-- Spring提供的JMS工具类，它可以进行消息发送、接收等 -->
+    <bean id="jmsTemplate" class="org.springframework.jms.core.JmsTemplate">
+        <!-- 这个connectionFactory对应的是我们定义的Spring提供的那个ConnectionFactory对象 -->
+        <property name="connectionFactory" ref="connectionFactory"/>
+    </bean>
+
+    <!--这个是队列目的地，点对点的-->
+    <bean id="queueDestination" class="org.apache.activemq.command.ActiveMQQueue">
+        <constructor-arg>
+            <value>queue</value>
+        </constructor-arg>
+    </bean>
+
+    <!-- 消息监听器 -->
+    <bean id="consumerMessageListener" class="com.tdb.tanbobo.base.jms.listener.ConsumerMessageListener"/>
+
+    <!-- 消息监听容器 -->
+    <bean id="jmsContainer" class="org.springframework.jms.listener.DefaultMessageListenerContainer">
+        <property name="connectionFactory" ref="connectionFactory"/>
+        <property name="destination" ref="queueDestination"/>
+        <property name="messageListener" ref="consumerMessageListener"/>
+    </bean>
+
+    <!--这个是主题目的地，一对多的-->
+    <bean id="topicDestination" class="org.apache.activemq.command.ActiveMQTopic">
+        <constructor-arg value="topic"/>
+    </bean>
+</beans>

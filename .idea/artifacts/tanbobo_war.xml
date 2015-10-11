@@ -1,0 +1,8 @@
+<component name="ArtifactManager">
+  <artifact type="war" name="tanbobo:war">
+    <output-path>$PROJECT_DIR$/target</output-path>
+    <root id="archive" name="tanbobo.war">
+      <element id="artifact" artifact-name="tanbobo:war exploded" />
+    </root>
+  </artifact>
+</component>
